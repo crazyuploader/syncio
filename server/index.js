@@ -244,16 +244,20 @@ async function bootstrap() {
       }
     }
 
-    scheduleSyncs(
-      readSyncFrequencyMinutes(),
-      prisma,
-      getAccountId,
-      scopedWhere,
-      decrypt,
-      reloadGroupAddons,
-      schedulerReq,
-      INSTANCE_TYPE
-    )
+    try {
+      scheduleSyncs(
+        readSyncFrequencyMinutes(),
+        prisma,
+        getAccountId,
+        scopedWhere,
+        decrypt,
+        reloadGroupAddons,
+        schedulerReq,
+        INSTANCE_TYPE
+      )
+    } catch (err) {
+      console.error('⚠️ Failed to initialize sync scheduler:', err)
+    }
 
     // Schedule user expiration cleanup (runs at midnight)
     try {
