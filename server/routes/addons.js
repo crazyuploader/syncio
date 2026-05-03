@@ -1437,7 +1437,8 @@ module.exports = ({ prisma, getAccountId, decrypt, encrypt, getDecryptedManifest
         });
 
         // Check if online - if so, this is the active one
-        if (current.isOnline && current.isActive !== false) {
+        // Use !== false to match findBestAddonInChain: treats null/undefined as online
+        if (current.isOnline !== false && current.isActive !== false) {
           break;
         }
 

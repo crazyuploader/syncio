@@ -78,6 +78,81 @@ async function checkUrlHealth(url, name) {
 }
 
 /**
+ * Find all group IDs affected by a status change on the given addon.
+ * Includes groups where addon is a direct member (GroupAddon) AND groups
+ * where addon sits in a backup chain whose chain-head is in GroupAddon.
+ * This ensures re-syncs fire even when a backup-of-backup changes state.
+ */
+async function findAffectedGroupIds(prisma, addonId) {
+  const groupIdSet = new Set();
+
+  // Direct: groups that explicitly have this addon
+  const direct = await prisma.groupAddon.findMany({
+    where: { addonId },
+    select: { groupId: true },
+  });
+  for (const ga of direct) groupIdSet.add(ga.groupId);
+
+  // Indirect: walk up the backup chain — find addons that list this addon
+  // as their backupAddonId, then their parents, etc.
+  let currentIds = [addonId];
+  const visited = new Set([addonId]);
+  const MAX_DEPTH = 5;
+
+  for (let depth = 0; depth < MAX_DEPTH && currentIds.length > 0; depth++) {
+    const parents = await prisma.addon.findMany({
+      where: { backupAddonId: { in: currentIds }, isActive: true },
+      select: { id: true },
+    });
+
+    const parentIds = parents.map(p => p.id).filter(id => !visited.has(id));
+    if (parentIds.length === 0) break;
+
+    for (const id of parentIds) visited.add(id);
+
+    const parentGroups = await prisma.groupAddon.findMany({
+      where: { addonId: { in: parentIds } },
+      select: { groupId: true },
+    });
+    for (const ga of parentGroups) groupIdSet.add(ga.groupId);
+
+    currentIds = parentIds;
+  }
+
+  return [...groupIdSet];
+}
+
+/**
+ * Re-sync all groups affected by an addon status change.
+ * Uses findAffectedGroupIds to cover both direct members and backup-chain parents.
+ */
+async function triggerGroupResyncs(prisma, addon, reason) {
+  try {
+    const { syncGroupUsers } = require('../routes/groups');
+    const { getAccountId, scopedWhere } = require('./helpers');
+
+    const groupIds = await findAffectedGroupIds(prisma, addon.id);
+
+    if (groupIds.length === 0) return;
+
+    console.log(`[AddonHealthCheck] Triggering re-sync for ${groupIds.length} group(s) affected by ${addon.name} ${reason}`);
+
+    const mockReq = { appAccountId: addon.accountId, headers: {} };
+
+    for (const groupId of groupIds) {
+      try {
+        await syncGroupUsers(prisma, getAccountId, scopedWhere, decrypt, groupId, mockReq);
+        console.log(`[AddonHealthCheck] Re-synced group ${groupId} (${addon.name} ${reason})`);
+      } catch (syncErr) {
+        console.error(`[AddonHealthCheck] Failed to re-sync group ${groupId}:`, syncErr.message);
+      }
+    }
+  } catch (err) {
+    console.error(`[AddonHealthCheck] Failed to trigger group re-syncs for ${addon.name}:`, err.message);
+  }
+}
+
+/**
  * Perform health check on all addons
  * @param {Object} prisma - Prisma client
  * @param {string|null} accountId - Optional account ID
@@ -110,6 +185,13 @@ async function performHealthChecks(prisma, accountId = null) {
     for (const addon of addons) {
       try {
         const manifestUrl = getDecryptedManifestUrl(addon);
+
+        if (!manifestUrl) {
+          console.warn(`[AddonHealthCheck] Skipping ${addon.name} — no manifest URL`);
+          offlineCount++;
+          continue;
+        }
+
         let result = await checkUrlHealth(manifestUrl, addon.name);
 
         // Retry once if failed
@@ -175,8 +257,18 @@ async function performHealthChecks(prisma, accountId = null) {
             } catch (reloadError) {
               console.error(`[AddonHealthCheck] Failed to reload ${addon.name}:`, reloadError.message);
             }
+
+            // Trigger immediate re-sync for all affected groups (including those
+            // where this addon sits in a backup chain) so they switch back to
+            // primary without waiting for the next scheduled sync
+            await triggerGroupResyncs(prisma, addon, 'coming back online');
           } else {
             console.log(`[AddonHealthCheck] ${addon.name} is now OFFLINE: ${result.error}`);
+
+            // Trigger immediate re-sync for all affected groups (including those
+            // where this addon sits in a backup chain) so they switch to the
+            // next available backup without waiting for the next scheduled sync
+            await triggerGroupResyncs(prisma, addon, 'going offline');
           }
         }
 
