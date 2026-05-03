@@ -1,7 +1,6 @@
 services:
-
-  syncio:
-    image: ghcr.io/iamneur0/syncio:public
+  backend:
+    image: ghcr.io/iamneur0/syncio:backend-public
     environment:
       DATABASE_URL: 'postgresql://syncio:syncio@db:5432/syncio'
       JWT_SECRET: 'dev-secret'
@@ -9,8 +8,16 @@ services:
     depends_on:
       - db
     ports:
-      - "3000:3000"
       - "4000:4000"
+
+  frontend:
+    image: ghcr.io/iamneur0/syncio:frontend-public
+    environment:
+      BACKEND_URL: 'http://backend:4000'
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
 
   db:
     image: postgres:16-alpine
@@ -25,4 +32,3 @@ services:
 
 volumes:
   pgdata:
-  redis_data:

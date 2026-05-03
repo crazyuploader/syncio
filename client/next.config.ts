@@ -42,45 +42,46 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_APP_VERSION: APP_VERSION,
   },
   async rewrites() {
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:4000';
     return [
       // Main API routes
       {
         source: '/api/:path*',
-        destination: 'http://localhost:4000/api/:path*',
+        destination: `${backendUrl}/api/:path*`,
       },
       // Public invite routes (no auth required)
       {
         source: '/invite/:inviteCode/check',
-        destination: 'http://localhost:4000/invite/:inviteCode/check',
+        destination: `${backendUrl}/invite/:inviteCode/check`,
       },
       {
         source: '/invite/:inviteCode/request',
-        destination: 'http://localhost:4000/invite/:inviteCode/request',
+        destination: `${backendUrl}/invite/:inviteCode/request`,
       },
       {
         source: '/invite/:inviteCode/status',
-        destination: 'http://localhost:4000/invite/:inviteCode/status',
+        destination: `${backendUrl}/invite/:inviteCode/status`,
       },
       {
         source: '/invite/:inviteCode/generate-oauth',
-        destination: 'http://localhost:4000/invite/:inviteCode/generate-oauth',
+        destination: `${backendUrl}/invite/:inviteCode/generate-oauth`,
       },
       {
         source: '/invite/:inviteCode/complete',
-        destination: 'http://localhost:4000/invite/:inviteCode/complete',
+        destination: `${backendUrl}/invite/:inviteCode/complete`,
       },
       {
         source: '/invite/:inviteCode/user-info',
-        destination: 'http://localhost:4000/invite/:inviteCode/user-info',
+        destination: `${backendUrl}/invite/:inviteCode/user-info`,
       },
       // Public user deletion routes
       {
         source: '/invite/generate-oauth',
-        destination: 'http://localhost:4000/invite/generate-oauth',
+        destination: `${backendUrl}/invite/generate-oauth`,
       },
       {
         source: '/invite/delete-user',
-        destination: 'http://localhost:4000/invite/delete-user',
+        destination: `${backendUrl}/invite/delete-user`,
       },
     ];
   },
