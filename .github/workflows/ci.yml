@@ -27,35 +27,15 @@ jobs:
         include:
           - platform: linux/amd64
             runs-on: ubuntu-latest
-            target: frontend
             instance: private
           - platform: linux/arm64
             runs-on: ubuntu-24.04-arm
-            target: frontend
             instance: private
           - platform: linux/amd64
             runs-on: ubuntu-latest
-            target: backend
-            instance: private
-          - platform: linux/arm64
-            runs-on: ubuntu-24.04-arm
-            target: backend
-            instance: private
-          - platform: linux/amd64
-            runs-on: ubuntu-latest
-            target: frontend
             instance: public
           - platform: linux/arm64
             runs-on: ubuntu-24.04-arm
-            target: frontend
-            instance: public
-          - platform: linux/amd64
-            runs-on: ubuntu-latest
-            target: backend
-            instance: public
-          - platform: linux/arm64
-            runs-on: ubuntu-24.04-arm
-            target: backend
             instance: public
 
     runs-on: ${{ matrix.runs-on }}
@@ -92,12 +72,11 @@ jobs:
         with:
           context: .
           platforms: ${{ matrix.platform }}
-          target: ${{ matrix.target }}
           push: false
           build-args: INSTANCE=${{ matrix.instance }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.instance }}-${{ matrix.target }}-${{ env.PLATFORM_PAIR }}
-          cache-to: type=gha,scope=${{ matrix.instance }}-${{ matrix.target }}-${{ env.PLATFORM_PAIR }},mode=max
+          cache-from: type=gha,scope=${{ matrix.instance }}-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,scope=${{ matrix.instance }}-${{ env.PLATFORM_PAIR }},mode=max
 
       - name: Build and push by digest
         if: github.event_name != 'pull_request'
@@ -106,12 +85,11 @@ jobs:
         with:
           context: .
           platforms: ${{ matrix.platform }}
-          target: ${{ matrix.target }}
           build-args: INSTANCE=${{ matrix.instance }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ matrix.instance }}-${{ matrix.target }}-${{ env.PLATFORM_PAIR }}
-          cache-to: type=gha,scope=${{ matrix.instance }}-${{ matrix.target }}-${{ env.PLATFORM_PAIR }},mode=max
+          cache-from: type=gha,scope=${{ matrix.instance }}-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,scope=${{ matrix.instance }}-${{ env.PLATFORM_PAIR }},mode=max
 
       - name: Export digest
         if: github.event_name != 'pull_request'
@@ -124,7 +102,7 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ matrix.instance }}-${{ matrix.target }}-${{ env.PLATFORM_PAIR }}
+          name: digests-${{ matrix.instance }}-${{ env.PLATFORM_PAIR }}
           path: ${{ runner.temp }}/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -135,22 +113,14 @@ jobs:
     if: github.event_name != 'pull_request'
     strategy:
       matrix:
-        include:
-          - instance: private
-            target: frontend
-          - instance: private
-            target: backend
-          - instance: public
-            target: frontend
-          - instance: public
-            target: backend
+        instance: [private, public]
 
     steps:
       - name: Download digests
         uses: actions/download-artifact@v4
         with:
           path: ${{ runner.temp }}/digests
-          pattern: digests-${{ matrix.instance }}-${{ matrix.target }}-*
+          pattern: digests-${{ matrix.instance }}-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
@@ -167,10 +137,10 @@ jobs:
         working-directory: ${{ runner.temp }}/digests
         run: |
           docker buildx imagetools create \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.target }}-${{ matrix.instance }}-dev \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.instance }}-dev \
             $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
 
       - name: Inspect manifest
         run: |
           docker buildx imagetools inspect \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.target }}-${{ matrix.instance }}-dev
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.instance }}-dev

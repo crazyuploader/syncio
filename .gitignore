@@ -135,4 +135,3 @@ server/test*
 client/test*
 *.sh
 client/scripts
-!scripts/*.sh
