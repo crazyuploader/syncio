@@ -18,6 +18,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    strategy:
+      matrix:
+        instance: [private, public]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -32,14 +35,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build private image (no push on PR)
+      - name: Build and push ${{ matrix.instance }} image
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.instance }}-dev
           build-args: |
-            INSTANCE=private
+            INSTANCE=${{ matrix.instance }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
