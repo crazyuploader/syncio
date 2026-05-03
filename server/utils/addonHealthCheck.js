@@ -1,7 +1,5 @@
-// Addon health check scheduler
-// Periodically checks if addon manifests are reachable
-// When primary is offline, adds backup addon to groups
-// When primary comes back online, removes backup addon from groups
+// Polls addon manifest URLs on a configurable interval.
+// Marks addons online/offline and re-syncs affected groups on status change.
 
 const { performance } = require('perf_hooks');
 const { decrypt } = require('./encryption');
@@ -86,15 +84,18 @@ async function checkUrlHealth(url, name) {
 async function findAffectedGroupIds(prisma, addonId) {
   const groupIdSet = new Set();
 
-  // Direct: groups that explicitly have this addon
+  // Groups that list this addon directly in GroupAddon
   const direct = await prisma.groupAddon.findMany({
     where: { addonId },
     select: { groupId: true },
   });
   for (const ga of direct) groupIdSet.add(ga.groupId);
 
-  // Indirect: walk up the backup chain — find addons that list this addon
-  // as their backupAddonId, then their parents, etc.
+  if (direct.length > 0) {
+    console.log(`[HealthCheck] Found ${direct.length} group(s) directly using addon ${addonId}`);
+  }
+
+  // Walk up the backupAddonId chain to find groups whose primary is above this addon
   let currentIds = [addonId];
   const visited = new Set([addonId]);
   const MAX_DEPTH = 5;
@@ -102,13 +103,15 @@ async function findAffectedGroupIds(prisma, addonId) {
   for (let depth = 0; depth < MAX_DEPTH && currentIds.length > 0; depth++) {
     const parents = await prisma.addon.findMany({
       where: { backupAddonId: { in: currentIds }, isActive: true },
-      select: { id: true },
+      select: { id: true, name: true },
     });
 
     const parentIds = parents.map(p => p.id).filter(id => !visited.has(id));
     if (parentIds.length === 0) break;
 
     for (const id of parentIds) visited.add(id);
+
+    console.log(`[HealthCheck] Chain walk depth ${depth + 1}: found parent addon(s) [${parents.map(p => p.name).join(', ')}]`);
 
     const parentGroups = await prisma.groupAddon.findMany({
       where: { addonId: { in: parentIds } },
@@ -133,22 +136,33 @@ async function triggerGroupResyncs(prisma, addon, reason) {
 
     const groupIds = await findAffectedGroupIds(prisma, addon.id);
 
-    if (groupIds.length === 0) return;
+    if (groupIds.length === 0) {
+      console.log(`[HealthCheck] No groups affected by ${addon.name} ${reason} — skipping re-sync`);
+      return;
+    }
 
-    console.log(`[AddonHealthCheck] Triggering re-sync for ${groupIds.length} group(s) affected by ${addon.name} ${reason}`);
+    console.log(`[HealthCheck] Triggering failover re-sync for ${groupIds.length} group(s) — ${addon.name} ${reason}`);
 
     const mockReq = { appAccountId: addon.accountId, headers: {} };
+    let synced = 0;
+    let failed = 0;
 
     for (const groupId of groupIds) {
       try {
-        await syncGroupUsers(prisma, getAccountId, scopedWhere, decrypt, groupId, mockReq);
-        console.log(`[AddonHealthCheck] Re-synced group ${groupId} (${addon.name} ${reason})`);
+        const result = await syncGroupUsers(prisma, getAccountId, scopedWhere, decrypt, groupId, mockReq);
+        const users = result?.syncedUsers ?? 0;
+        const failedUsers = result?.failedUsers ?? 0;
+        console.log(`[HealthCheck] Group ${groupId} re-synced: ${users} user(s) synced, ${failedUsers} failed`);
+        synced++;
       } catch (syncErr) {
-        console.error(`[AddonHealthCheck] Failed to re-sync group ${groupId}:`, syncErr.message);
+        console.error(`[HealthCheck] Group ${groupId} re-sync failed:`, syncErr.message);
+        failed++;
       }
     }
+
+    console.log(`[HealthCheck] Failover re-sync complete — ${synced} group(s) OK, ${failed} failed`);
   } catch (err) {
-    console.error(`[AddonHealthCheck] Failed to trigger group re-syncs for ${addon.name}:`, err.message);
+    console.error(`[HealthCheck] Failed to trigger group re-syncs for ${addon.name}:`, err.message);
   }
 }
 
@@ -194,16 +208,17 @@ async function performHealthChecks(prisma, accountId = null) {
 
         let result = await checkUrlHealth(manifestUrl, addon.name);
 
-        // Retry once if failed
+        // One retry after 2s to avoid flapping on transient errors
         if (!result.isOnline) {
+          console.log(`[HealthCheck] ${addon.name} failed first check (${result.error}), retrying in 2s...`);
           await new Promise(resolve => setTimeout(resolve, 2000));
           result = await checkUrlHealth(manifestUrl, addon.name);
         }
 
-        // Check if status changed
+        console.log(`[HealthCheck] ${addon.name} — ${result.isOnline ? '✓ online' : '✗ offline'} (${result.responseTime}ms)${result.error ? ` [${result.error}]` : ''}`);
+
         const statusChanged = addon.isOnline !== result.isOnline;
 
-        // Update addon status
         await prisma.addon.update({
           where: { id: addon.id },
           data: {
@@ -213,7 +228,7 @@ async function performHealthChecks(prisma, accountId = null) {
           },
         });
 
-        // Record history
+        // Append to health history
         await prisma.addonHealthHistory.create({
           data: {
             addonId: addon.id,
@@ -224,10 +239,10 @@ async function performHealthChecks(prisma, accountId = null) {
           },
         });
 
-        // Log status changes and reload addon when it comes back online
+        // On status change, reload manifest or trigger failover re-sync
         if (statusChanged) {
           if (result.isOnline) {
-            console.log(`[AddonHealthCheck] ${addon.name} is now ONLINE`);
+            console.log(`[HealthCheck] ✅ ${addon.name} is back ONLINE — reloading manifest and re-syncing affected groups`);
             
             // Reload addon to refresh manifest data
             try {
@@ -237,7 +252,7 @@ async function performHealthChecks(prisma, accountId = null) {
               const { encrypt, getDecryptedManifestUrl } = require('./encryption');
               const { manifestHash } = require('./hashing');
               
-              // Create mock request for reloadAddon
+              // reloadAddon needs a req-shaped object with appAccountId
               const mockReq = {
                 appAccountId: addon.accountId,
                 headers: {}
@@ -258,21 +273,15 @@ async function performHealthChecks(prisma, accountId = null) {
               console.error(`[AddonHealthCheck] Failed to reload ${addon.name}:`, reloadError.message);
             }
 
-            // Trigger immediate re-sync for all affected groups (including those
-            // where this addon sits in a backup chain) so they switch back to
-            // primary without waiting for the next scheduled sync
             await triggerGroupResyncs(prisma, addon, 'coming back online');
           } else {
-            console.log(`[AddonHealthCheck] ${addon.name} is now OFFLINE: ${result.error}`);
+            console.log(`[HealthCheck] ❌ ${addon.name} is now OFFLINE — ${result.error} — switching affected groups to backup`);
 
-            // Trigger immediate re-sync for all affected groups (including those
-            // where this addon sits in a backup chain) so they switch to the
-            // next available backup without waiting for the next scheduled sync
             await triggerGroupResyncs(prisma, addon, 'going offline');
           }
         }
 
-        // Count for summary
+        // Tally for end-of-run summary
         if (result.isOnline) {
           onlineCount++;
         } else {
@@ -294,37 +303,49 @@ async function performHealthChecks(prisma, accountId = null) {
   }
 }
 
-function getHealthCheckIntervalMinutes() {
+async function getHealthCheckIntervalMinutes(prisma, accountId) {
+  // DB wins over env var; env var wins over hardcoded default of 30
+  if (prisma && accountId) {
+    try {
+      const account = await prisma.appAccount.findUnique({
+        where: { id: accountId },
+        select: { addonHealthCheckIntervalMinutes: true },
+      });
+      if (account?.addonHealthCheckIntervalMinutes != null) {
+        return account.addonHealthCheckIntervalMinutes;
+      }
+    } catch {
+      // DB read failed — fall through to env/default
+    }
+  }
   const envInterval = process.env.ADDON_HEALTH_CHECK_INTERVAL_MINUTES;
   if (envInterval) {
     const parsed = parseInt(envInterval, 10);
-    if (!isNaN(parsed) && parsed >= 1) {
-      return parsed;
-    }
+    if (!isNaN(parsed) && parsed >= 1) return parsed;
   }
   return 30;
 }
 
-function startHealthCheckScheduler(prisma, accountId = null) {
-  const intervalMinutes = getHealthCheckIntervalMinutes();
-  
+async function startHealthCheckScheduler(prisma, accountId = null) {
+  const intervalMinutes = await getHealthCheckIntervalMinutes(prisma, accountId);
+
   if (intervalMinutes < 1) {
     console.log('[AddonHealthCheck] Health check is disabled');
     return;
   }
-  
+
   if (healthCheckTimer) {
     clearInterval(healthCheckTimer);
   }
-  
+
   const intervalMs = intervalMinutes * MINUTE_MS;
-  
+
   console.log(`[AddonHealthCheck] Starting scheduler with ${intervalMinutes} minute interval`);
-  
+
   setTimeout(() => {
     performHealthChecks(prisma, accountId);
   }, 10000);
-  
+
   healthCheckTimer = setInterval(() => {
     performHealthChecks(prisma, accountId);
   }, intervalMs);

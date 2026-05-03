@@ -178,24 +178,23 @@ async function getGroupAddons(prisma, groupId, req) {
   const filtered = (group.addons || []).filter(ga => ga?.addon && ga.addon.isActive !== false && (!accId || ga.addon.accountId === accId))
   const sorted = filtered.slice().sort((a, b) => ((a?.position ?? 0) - (b?.position ?? 0)))
 
-  // Function to recursively find the best addon (online one in the chain).
-  // Uses the stored isOnline value from the periodic health checker rather than
-  // doing a live HTTP check on every sync — live checks cause false negatives
-  // when an addon is momentarily slow, incorrectly triggering the backup.
+  // Walks the backupAddonId chain and returns the first online addon.
+  // Reads stored isOnline instead of doing a live check — live checks on every
+  // sync caused false negatives when an addon was momentarily slow.
   const findBestAddonInChain = async (addon, depth = 0) => {
     if (depth > 5) {
       console.warn(`[getGroupAddons] Backup chain too deep for ${addon.name}, stopping recursion`);
       return addon;
     }
 
-    // Trust the health checker's stored status (isOnline defaults to true)
+    // isOnline defaults to true in schema — treat null as online
     const isAddonOnline = addon.isOnline !== false;
 
     if (isAddonOnline) {
       return addon;
     }
 
-    // Addon is marked offline by health checker — check for a backup
+    // Health checker marked this offline — try the backup
     if (addon.backupAddonId) {
       const backupAddon = await prisma.addon.findUnique({
         where: { id: addon.backupAddonId }
@@ -207,7 +206,8 @@ async function getGroupAddons(prisma, groupId, req) {
       }
     }
 
-    // No backup or chain exhausted — return the offline addon as-is
+    // Chain exhausted with no online addon found
+    console.warn(`[Failover] ${addon.name} is offline with no available backup — using it as-is`);
     return addon;
   };
 
@@ -221,10 +221,10 @@ async function getGroupAddons(prisma, groupId, req) {
       console.log(`[getGroupAddons] Using backup addon ${bestAddon.name} for primary ${ga.addon.name}`);
     }
 
-    // Always use the DB-stored manifest for consistent fingerprint comparison.
-    // The DB manifest is kept current by the health checker (reloadAddon on status change)
-    // and manual reloads from the UI. Using live-fetched manifests caused intermittent
-    // synced/unsynced flicker when the fetch occasionally failed and fell back to a stale DB copy.
+    // Use the DB-stored manifest, not a live fetch. The health checker calls
+    // reloadAddon on status change; the UI also triggers reloads manually.
+    // Live fetches caused synced/unsynced flicker when a fetch failed and fell
+    // back to a stale cached copy.
     const manifest = (() => {
       try {
         const raw = bestAddon.manifest

@@ -461,44 +461,52 @@ module.exports = ({ prisma, INSTANCE_TYPE, getAccountDek, getDecryptedManifestUr
   })
 
   // Addon health check settings endpoints
-  const { 
+  const {
     getHealthCheckIntervalMinutes,
-    triggerManualHealthCheck 
+    startHealthCheckScheduler,
+    triggerManualHealthCheck
   } = require('../utils/addonHealthCheck');
 
   // Get health check interval setting
   router.get('/addon-health-check', async (req, res) => {
     try {
-      const intervalMinutes = getHealthCheckIntervalMinutes();
-      return res.json({ 
+      const accountId = INSTANCE_TYPE === 'public' ? req.appAccountId : DEFAULT_ACCOUNT_ID;
+      const intervalMinutes = await getHealthCheckIntervalMinutes(prisma, accountId);
+      return res.json({
         enabled: intervalMinutes >= 1,
-        intervalMinutes 
+        intervalMinutes
       });
     } catch (e) {
       return res.status(500).json({ message: 'Failed to read health check settings' });
     }
   });
 
-  // Update health check interval (requires restart to take effect)
+  // Update health check interval — persists to DB and restarts scheduler immediately
   router.put('/addon-health-check', async (req, res) => {
     try {
       const { intervalMinutes } = req.body || {};
-      
+
       if (intervalMinutes === undefined) {
         return res.status(400).json({ message: 'intervalMinutes is required' });
       }
-      
+
       const parsed = parseInt(intervalMinutes, 10);
       if (isNaN(parsed) || parsed < 0) {
         return res.status(400).json({ message: 'Invalid intervalMinutes value' });
       }
-      
-      // Store in environment variable for now
-      // In production, this would ideally be stored in the database
-      process.env.ADDON_HEALTH_CHECK_INTERVAL_MINUTES = String(parsed);
-      
-      return res.json({ 
-        message: 'Health check interval updated. Restart server to apply changes.',
+
+      const accountId = INSTANCE_TYPE === 'public' ? req.appAccountId : DEFAULT_ACCOUNT_ID;
+
+      await prisma.appAccount.update({
+        where: { id: accountId },
+        data: { addonHealthCheckIntervalMinutes: parsed },
+      });
+
+      // Restart scheduler with new interval immediately — no server restart needed
+      await startHealthCheckScheduler(prisma, accountId);
+
+      return res.json({
+        message: 'Health check interval updated',
         intervalMinutes: parsed,
         enabled: parsed >= 1
       });

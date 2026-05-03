@@ -130,8 +130,9 @@ model AppAccount {
   uuid         String? @unique
   email        String? @unique
   passwordHash String?
-  sync         Json?
-  apiKeyHash   String? // Encrypted API key
+  sync                              Json?
+  apiKeyHash                        String?
+  addonHealthCheckIntervalMinutes   Int?
 
   // Relationships
   invitations Invitation[]
