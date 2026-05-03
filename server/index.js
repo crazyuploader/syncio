@@ -273,6 +273,7 @@ async function bootstrap() {
     try {
       const { startHealthCheckScheduler } = require('./utils/addonHealthCheck')
       await startHealthCheckScheduler(prisma, schedulerReq.appAccountId)
+      console.log('✅ Addon health check scheduler started')
     } catch (err) {
       console.error('⚠️ Failed to initialize addon health checker:', err)
     }
