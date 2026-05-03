@@ -65,7 +65,7 @@ else
   fi
 fi
 echo "➡️ Ensuring schema is applied (db push)"
-bunx prisma db push --schema "$PRISMA_SCHEMA_PATH" --accept-data-loss || true
+bunx prisma db push --schema "$PRISMA_SCHEMA_PATH" --accept-data-loss --skip-generate || true
 
 export NODE_OPTIONS="--dns-result-order=ipv4first"
 
